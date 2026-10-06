@@ -17,7 +17,7 @@
 
 import itertools
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Iterator, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Tuple, Union
 
 from pyspark.sql.streaming.stateful_processor import (
     ExpiredTimerInfo,
@@ -38,6 +38,27 @@ if TYPE_CHECKING:
 # This file places the utilities for transformWithState in PySpark (Row, and Pandas); we have
 # a separate file to avoid putting internal classes to the stateful_processor.py file which
 # contains public APIs.
+
+try:
+    import numpy as np
+
+    # Keys arrive as Python float (Row paths) or numpy float (pandas paths, e.g. float32).
+    _FLOAT_TYPES: Tuple[type, ...] = (float, np.floating)
+except ImportError:
+    _FLOAT_TYPES = (float,)
+
+_CANONICAL_NAN = float("nan")
+
+
+def canonicalize_nan_key(key: Tuple[Any, ...]) -> Tuple[Any, ...]:
+    """
+    Map every NaN in a grouping key to a single shared NaN object.
+
+    Spark groups all NaN values together, but distinct Python NaN objects compare unequal.
+    ``itertools.groupby`` compares adjacent keys with ``PyObject_RichCompareBool``, which
+    short-circuits on identity, so sharing one NaN object makes all NaN keys fall in one group.
+    """
+    return tuple(_CANONICAL_NAN if isinstance(v, _FLOAT_TYPES) and v != v else v for v in key)
 
 
 class TransformWithStateInPandasFuncMode(Enum):

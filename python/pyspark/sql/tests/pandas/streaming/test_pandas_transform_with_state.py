@@ -16,6 +16,7 @@
 #
 
 import json
+import math
 import os
 import tempfile
 import time
@@ -24,7 +25,7 @@ from abc import abstractmethod
 from typing import cast
 
 from pyspark import SparkConf
-from pyspark.sql.functions import split
+from pyspark.sql.functions import col, split
 from pyspark.sql.streaming import StatefulProcessor
 from pyspark.sql.tests.pandas.helper.helper_pandas_transform_with_state import (
     AddFieldsProcessorFactory,
@@ -40,6 +41,7 @@ from pyspark.sql.tests.pandas.helper.helper_pandas_transform_with_state import (
     ProcTimeStatefulProcessorFactory,
     RemoveFieldsProcessorFactory,
     ReorderedFieldsProcessorFactory,
+    RunningCountStatefulProcessorFactory,
     SimpleStatefulProcessorFactory,
     SimpleStatefulProcessorWithInitialStateFactory,
     StatefulProcessorChainingOpsFactory,
@@ -51,6 +53,7 @@ from pyspark.sql.types import (
     DecimalType,
     DoubleType,
     IntegerType,
+    LongType,
     MapType,
     Row,
     StringType,
@@ -186,6 +189,57 @@ class TransformWithStateTestsMixin:
         q.stop()
         q.awaitTermination(10)
         self.assertTrue(q.exception() is None)
+
+    def test_transform_with_state_groups_nan_keys(self):
+        # Spark groups all NaN values together, so NaN rows must reach the processor as one group.
+        input_path = tempfile.mkdtemp()
+        with open(input_path + "/nan-keys.txt", "w") as fw:
+            fw.write("NaN\nNaN\nNaN\n1.0\n")
+
+        df = (
+            self.spark.readStream.format("text")
+            .load(input_path)
+            .select(col("value").cast("double").alias("key"))
+        )
+        output_schema = StructType(
+            [StructField("key", DoubleType(), True), StructField("count", LongType(), True)]
+        )
+        processor = self.get_processor(RunningCountStatefulProcessorFactory())
+        grouped = df.groupBy("key")
+        if self.use_pandas():
+            tws_df = grouped.transformWithStateInPandas(
+                statefulProcessor=processor,
+                outputStructType=output_schema,
+                outputMode="Update",
+                timeMode="None",
+            )
+        else:
+            tws_df = grouped.transformWithState(
+                statefulProcessor=processor,
+                outputStructType=output_schema,
+                outputMode="Update",
+                timeMode="None",
+            )
+
+        results = []
+
+        def collect_results(batch_df, batch_id):
+            results.extend(batch_df.collect())
+
+        q = (
+            tws_df.writeStream.option("checkpointLocation", tempfile.mkdtemp())
+            .foreachBatch(collect_results)
+            .outputMode("update")
+            .start()
+        )
+        q.processAllAvailable()
+        q.stop()
+        q.awaitTermination(10)
+        self.assertIsNone(q.exception())
+
+        nan_counts = [r["count"] for r in results if math.isnan(r["key"])]
+        self.assertEqual(nan_counts, [3])
+        self.assertEqual([r["count"] for r in results if r["key"] == 1.0], [1])
 
     def test_transform_with_state_basic(self):
         def check_results(batch_df, batch_id):

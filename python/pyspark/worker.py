@@ -90,7 +90,10 @@ from pyspark.sql.pandas.serializers import (
 )
 from pyspark.sql.pandas.types import to_arrow_type
 from pyspark.sql.streaming.stateful_processor_api_client import StatefulProcessorApiClient
-from pyspark.sql.streaming.stateful_processor_util import TransformWithStateInPandasFuncMode
+from pyspark.sql.streaming.stateful_processor_util import (
+    TransformWithStateInPandasFuncMode,
+    canonicalize_nan_key,
+)
 from pyspark.sql.types import (
     ArrayType,
     BinaryType,
@@ -3089,7 +3092,7 @@ def read_udfs(pickleSer, udf_info_list, eval_type, runner_conf, eval_conf):
                         prefer_int_ext_dtype=runner_conf.prefer_int_ext_dtype,
                     )
                     for row in pd.concat(data_pandas, axis=1).itertuples(index=False):
-                        batch_key = tuple(row[o] for o in key_offsets)
+                        batch_key = canonicalize_nan_key(tuple(row[o] for o in key_offsets))
                         yield (batch_key, row)
 
             def generate_data_batches():
@@ -3261,11 +3264,13 @@ def read_udfs(pickleSer, udf_info_list, eval_type, runner_conf, eval_conf):
 
                     if has_data:
                         for row in pd.concat(to_pandas(data_table), axis=1).itertuples(index=False):
-                            batch_key = tuple(row[o] for o in key_offsets)
+                            batch_key = canonicalize_nan_key(tuple(row[o] for o in key_offsets))
                             yield (batch_key, row, None)
                     elif has_init:
                         for row in pd.concat(to_pandas(init_table), axis=1).itertuples(index=False):
-                            batch_key = tuple(row[o] for o in init_key_offsets)
+                            batch_key = canonicalize_nan_key(
+                                tuple(row[o] for o in init_key_offsets)
+                            )
                             yield (batch_key, None, row)
 
             empty_dataframe = pd.DataFrame()
@@ -3755,7 +3760,9 @@ def read_udfs(pickleSer, udf_info_list, eval_type, runner_conf, eval_conf):
                     # Iterate row by row without converting the whole batch.
                     num_cols = batch.num_columns
                     for row_idx in range(batch.num_rows):
-                        row_key = tuple(batch[o][row_idx].as_py() for o in key_offsets)
+                        row_key = canonicalize_nan_key(
+                            tuple(batch[o][row_idx].as_py() for o in key_offsets)
+                        )
                         row = DataRow(*(batch.column(i)[row_idx].as_py() for i in range(num_cols)))
                         yield row_key, row
 
@@ -3879,7 +3886,9 @@ def read_udfs(pickleSer, udf_info_list, eval_type, runner_conf, eval_conf):
 
                 def row_iterator() -> Iterator[Tuple[Any, Any]]:
                     for row_idx in range(table.num_rows):
-                        key = tuple(table.column(o)[row_idx].as_py() for o in offsets)
+                        key = canonicalize_nan_key(
+                            tuple(table.column(o)[row_idx].as_py() for o in offsets)
+                        )
                         row = DataRow(
                             *(table.column(i)[row_idx].as_py() for i in range(table.num_columns))
                         )
